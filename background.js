@@ -1,164 +1,294 @@
-// --- UPDATED with Advanced Autonomous Strategy Selection ---
+/**
+ * @file background.js
+ * @description Universal Multi-Provider Background Worker for SYNTAX AI.
+ * Handles secure execution of Strategist and Executor cognitive agent pipelines,
+ * stores local configuration state, and acts as a sandboxed proxy to prevent CORS issues.
+ * @version 4.0
+ */
 
+// ── Provider Config Registry ──────────────────────────────────────────────────
+/**
+ * @typedef {Object} ProviderConfig
+ * @property {string} name - Friendly display name of the LLM provider.
+ * @property {'gemini'|'anthropic'|'openai-compat'} type - Underlying API scheme.
+ * @property {string} model - Target model identifier.
+ * @property {string} url - Base API endpoint URL (if compat provider).
+ */
+
+/** @type {Object<string, ProviderConfig>} */
+const PROVIDERS = {
+    gemini:          { name: 'Google Gemini',  type: 'gemini',        model: 'gemini-2.0-flash',                    url: '' },
+    openai:          { name: 'OpenAI',         type: 'openai-compat', model: 'gpt-4o-mini',                        url: 'https://api.openai.com/v1' },
+    anthropic:       { name: 'Anthropic',      type: 'anthropic',     model: 'claude-3-haiku-20240307',             url: '' },
+    groq:            { name: 'Groq',           type: 'openai-compat', model: 'llama-3.3-70b-versatile',            url: 'https://api.groq.com/openai/v1' },
+    openrouter:      { name: 'OpenRouter',     type: 'openai-compat', model: 'openai/gpt-4o-mini',                 url: 'https://openrouter.ai/api/v1' },
+    xai:             { name: 'xAI / Grok',     type: 'openai-compat', model: 'grok-beta',                          url: 'https://api.x.ai/v1' },
+    deepseek:        { name: 'DeepSeek',       type: 'openai-compat', model: 'deepseek-chat',                      url: 'https://api.deepseek.com/v1' },
+    mistral:         { name: 'Mistral',        type: 'openai-compat', model: 'mistral-small-latest',               url: 'https://api.mistral.ai/v1' },
+    'perplexity-api':{ name: 'Perplexity API', type: 'openai-compat', model: 'llama-3.1-sonar-small-128k-online', url: 'https://api.perplexity.ai' },
+};
+
+// ── Prefix Auto-Detection Registry ────────────────────────────────────────────
+/**
+ * Prefix-to-Provider mapping array.
+ * Note: Longer prefixes must be defined first to avoid false matching.
+ * @type {Array<[string, string]>}
+ */
+const PREFIX_MAP = [
+    ['sk-ant-',   'anthropic'],
+    ['sk-or-',    'openrouter'],
+    ['sk-proj-',  'openai'],
+    ['AIza',      'gemini'],
+    ['gsk_',      'groq'],
+    ['pplx-',     'perplexity-api'],
+    ['xai-',      'xai'],
+    ['sk-',       'openai'],  // fallback for generic OpenAI/compatible keys
+];
+
+/**
+ * Auto-detects the LLM provider based on the format/prefix of the API key.
+ * @param {string} key - Raw API key token.
+ * @returns {string|null} The resolved provider key, or null if unrecognized.
+ */
+function detectProviderFromKey(key) {
+    const cleanKey = (key || '').trim();
+    for (const [prefix, id] of PREFIX_MAP) {
+        if (cleanKey.startsWith(prefix)) return id;
+    }
+    return null;
+}
+
+// ── Runtime Message Listeners ─────────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "enhancePrompt") {
-        const { prompt, suggestion } = request;
-        
-        enhanceTextWithGemini(prompt, suggestion)
-            .then(responseObject => {
-                sendResponse(responseObject);
-            })
-            .catch(error => {
-                console.error("SYNTAX AI Error:", error);
-                sendResponse({ status: 'error', text: error.message });
+    const loggerPrefix = '[Syntax AI Background]';
+    
+    if (request.action === 'enhancePrompt') {
+        enhanceText(request.prompt, request.suggestion)
+            .then(sendResponse)
+            .catch(err => {
+                console.error(`${loggerPrefix} Enhancement execution failed:`, err);
+                sendResponse({ status: 'error', text: err.message });
             });
-            
-        return true; // Indicate async response
+        return true; // Keep message port open for asynchronous response
+    }
+    
+    if (request.action === 'detectProvider') {
+        const detected = detectProviderFromKey(request.key);
+        sendResponse({ provider: detected });
     }
 });
 
-// --- Helper function to extract a JSON object from a string ---
-function extractJsonFromString(text) {
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-        return jsonMatch[0];
-    }
-    return null; // Return null if no JSON object is found
+// ── Helper Utilities ──────────────────────────────────────────────────────────
+/**
+ * Safely extracts the first valid JSON block from a raw string.
+ * @param {string} text - Raw model response text.
+ * @returns {string|null} Extracted JSON substring, or null if no valid block found.
+ */
+function extractJson(text) {
+    const match = text.match(/\{[\s\S]*\}/);
+    return match ? match[0] : null;
 }
 
-// Helper function for making API calls
-async function makeApiCall(apiKey, prompt) {
-    const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] };
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-    const response = await fetch(apiUrl, {
+// ── API Call Implementations ──────────────────────────────────────────────────
+/**
+ * Executes a native Google Gemini API payload request.
+ * @param {string} apiKey - Gemini API Key.
+ * @param {string} prompt - Raw instructions.
+ * @returns {Promise<string>} Enhanced prompt response.
+ */
+async function callGemini(apiKey, prompt) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] }),
     });
-
-    if (!response.ok) {
-        throw new Error(`API call failed with status: ${response.status}`);
-    }
-
-    const result = await response.json();
-    return result.candidates?.[0]?.content?.parts?.[0]?.text.trim() || "";
+    if (!res.ok) throw new Error(`Gemini API error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
 }
 
-
-async function enhanceTextWithGemini(prompt, userSuggestion = '') {
-    const data = await chrome.storage.sync.get('geminiApiKey');
-    const apiKey = data.geminiApiKey;
-
-    if (!apiKey) {
-        return { status: 'error', text: "API key not found. Please set it in the extension options." };
-    }
-
-    // --- STEP 1: The "Strategist" Call with Expanded Techniques ---
-    // UPDATED: The strategist now has a much richer set of tools to choose from.
-    const strategistPrompt = `
-        You are an expert AI Prompt Engineering Strategist. Your task is to analyze the user's prompt and an optional user suggestion, then decide on the single best enhancement strategy.
-        Your response MUST be ONLY a single, valid JSON object, starting with { and ending with }.
-
-        Analyze the following:
-        - User's Prompt: "${prompt}"
-        - User's Suggestion: "${userSuggestion || 'None'}"
-
-        Here are the available strategies and when to use them:
-        - "Directive": For straightforward requests. Goal is to make the prompt clearer, more concise, and unambiguous.
-        - "Exploratory": For open-ended or creative prompts. Goal is to add detail, suggest angles, and encourage broader exploration.
-        - "Contextual": When the prompt needs more background info to be effective. The goal will involve generating this context first.
-        - "Chain_of_Thought": For prompts requiring logic, math, or step-by-step reasoning. Goal is to rephrase the prompt to ask for the reasoning process first.
-        - "Reflective": For prompts that involve evaluation, comparison, or critique. Goal is to structure the prompt to ask the AI to first consider criteria, then apply them.
-        - "Sequential": For complex tasks that can be broken down into a clear sequence of smaller steps. Goal is to outline these steps in the new prompt.
-        - "Zero_Shot_Correction": Use this ONLY for basic spelling/grammar fixes if the prompt is already well-structured.
-
-        Your JSON output must have this exact structure:
-        {
-          "is_enhancement_needed": boolean,
-          "reasoning": "A brief explanation for your decision and strategy choice.",
-          "chosen_strategy": "one of the strategies listed above",
-          "enhancement_goal": "A detailed, actionable goal for the next AI model to perform the enhancement, based on the chosen strategy."
-        }
-    `;
-
-    let strategyDecision;
+/**
+ * Executes a native Anthropic API payload request.
+ * @param {string} apiKey - Anthropic API Key.
+ * @param {string} prompt - Raw instructions.
+ * @returns {Promise<string>} Enhanced prompt response.
+ */
+async function callAnthropic(apiKey, prompt) {
     try {
-        const rawDecision = await makeApiCall(apiKey, strategistPrompt);
-        const cleanJsonString = extractJsonFromString(rawDecision);
-        if (!cleanJsonString) {
-            throw new Error("Strategist response did not contain a valid JSON object.");
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+                model: 'claude-3-haiku-20240307',
+                max_tokens: 2048,
+                messages: [{ role: 'user', content: prompt }],
+            }),
+        });
+        if (!res.ok) throw new Error(`Anthropic API error ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+        return data.content?.[0]?.text?.trim() || '';
+    } catch (err) {
+        // Intercept browser-side Anthropic CORS blocks and instruct the user on how to resolve.
+        const isNetworkOrCorsError = err.message === 'Failed to fetch' || 
+                                     err.message.includes('CORS') || 
+                                     err.message.includes('NetworkError');
+        if (isNetworkOrCorsError) {
+            throw new Error(
+                'Anthropic blocks direct calls from browser extensions due to CORS policy. ' +
+                'To use Claude models, switch to an OpenRouter key instead — ' +
+                'it proxies Anthropic models securely and supports browser extension requests.'
+            );
         }
-        strategyDecision = JSON.parse(cleanJsonString);
+        throw err;
+    }
+}
+
+/**
+ * Executes a standard OpenAI-Compatible chat completion request.
+ * @param {string} apiKey - Target provider API key.
+ * @param {string} prompt - Structured instructions.
+ * @param {string} baseUrl - API endpoint origin URL.
+ * @param {string} model - Target model identifier.
+ * @returns {Promise<string>} Enhanced prompt response.
+ */
+async function callOpenAICompat(apiKey, prompt, baseUrl, model) {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.7,
+        }),
+    });
+    if (!res.ok) throw new Error(`${baseUrl} error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    return data.choices?.[0]?.message?.content?.trim() || '';
+}
+
+/**
+ * Unified dispatch router that maps a provider to its native HTTP request wrapper.
+ * @param {string} apiKey - API key configuration.
+ * @param {string} provider - Resolved target provider name.
+ * @param {string} prompt - Raw instruction payload.
+ * @returns {Promise<string>} Finished LLM response payload.
+ */
+async function makeApiCall(apiKey, provider, prompt) {
+    const cfg = PROVIDERS[provider];
+    if (!cfg) throw new Error(`Unknown provider configuration: "${provider}"`);
+
+    if (cfg.type === 'gemini')        return callGemini(apiKey, prompt);
+    if (cfg.type === 'anthropic')     return callAnthropic(apiKey, prompt);
+    if (cfg.type === 'openai-compat') return callOpenAICompat(apiKey, prompt, cfg.url, cfg.model);
+    throw new Error(`Unsupported provider protocol scheme: ${cfg.type}`);
+}
+
+// ── Agentic Cognitive Pipeline ───────────────────────────────────────────────
+/**
+ * Enhances prompt text using a dual-agent Strategist and Executor process.
+ * @param {string} prompt - Original prompt string written by the user.
+ * @param {string} [userSuggestion] - Optional specific instructions to guide enhancement.
+ * @returns {Promise<{status: 'success'|'no_change'|'error', text: string}>} Result envelope.
+ */
+async function enhanceText(prompt, userSuggestion = '') {
+    // 1. Fetch credentials with migration checking
+    const stored = await chrome.storage.sync.get(['apiKey', 'geminiApiKey', 'provider']);
+    const apiKey = stored.apiKey || stored.geminiApiKey || '';
+    const savedProvider = stored.provider || '';
+    
+    if (!apiKey) {
+        return { 
+            status: 'error', 
+            text: 'API key not configured. Please paste your key in the Setup popup or open options.' 
+        };
+    }
+
+    // 2. Resolve provider dynamically based on prefix ambiguity rules
+    const detectedProvider = detectProviderFromKey(apiKey);
+    const AMBIGUOUS = ['openai'];
+    const provider =
+        (detectedProvider && !AMBIGUOUS.includes(detectedProvider))
+            ? detectedProvider
+            : (savedProvider || detectedProvider || 'openai');
+
+    // 3. STEP 1: Cognitive Strategist Execution
+    const strategistPrompt = `You are an expert AI Prompt Engineering Strategist. Analyze the user's prompt and decide the single best enhancement strategy.
+Your response MUST be ONLY a valid JSON object.
+
+User Prompt: "${prompt}"
+User Suggestion: "${userSuggestion || 'None'}"
+
+Strategies:
+- "Directive": Make clearer, concise, unambiguous.
+- "Exploratory": Add detail, angles, encourage broader exploration.
+- "Contextual": Generate necessary background context first.
+- "Chain_of_Thought": Ask for step-by-step reasoning.
+- "Reflective": Evaluate, compare, apply criteria.
+- "Sequential": Break into ordered steps.
+- "Zero_Shot_Correction": Basic grammar/spelling fix only.
+
+Respond with this exact JSON schema:
+{"is_enhancement_needed":boolean,"reasoning":"brief explanation","chosen_strategy":"strategy name","enhancement_goal":"detailed actionable goal"}`;
+
+    let strategy;
+    try {
+        const raw = await makeApiCall(apiKey, provider, strategistPrompt);
+        const json = extractJson(raw);
+        if (!json) throw new Error('No valid JSON extracted from Strategist response');
+        strategy = JSON.parse(json);
     } catch (e) {
-        console.error("Failed to get a valid strategy decision:", e);
-        strategyDecision = { is_enhancement_needed: true, chosen_strategy: 'Zero_Shot_Correction', enhancement_goal: 'Perform a basic grammar and clarity check.' };
+        console.warn('[Syntax AI Background] Strategist phase failed, falling back to spelling check:', e);
+        strategy = { 
+            is_enhancement_needed: true, 
+            chosen_strategy: 'Zero_Shot_Correction', 
+            enhancement_goal: 'Perform a basic grammar and clarity check.' 
+        };
     }
 
-    if (!strategyDecision.is_enhancement_needed) {
-        return { status: 'no_change', text: `No enhancement needed: ${strategyDecision.reasoning}` };
+    // Short-circuit if prompt is evaluated as already optimal
+    if (!strategy.is_enhancement_needed) {
+        return { status: 'no_change', text: `No enhancement needed: ${strategy.reasoning}` };
     }
 
+    // 4. STEP 2: Rewrite Executor Execution
+    const baseInstruction = `You are an expert prompt rewriter. Rewrite the 'Original User Prompt' to meet the 'Goal'. Output ONLY the rewritten prompt — no preambles, explanations, markdown, or quotes.`;
+    let executionPrompt;
 
-    // --- STEP 2: The "Execution" Call ---
-    let executionPrompt = "";
-    // --- MODIFIED: Stricter instructions to prevent conversational replies or questions ---
-    const baseInstruction = `You are an expert prompt rewriter. Your sole function is to rewrite the 'Original User Prompt' to meet the specified 'Goal'. Your output MUST be ONLY the rewritten prompt text and nothing else.
-
-    **CRITICAL INSTRUCTIONS:**
-    - **DO NOT** ask the user for more information or clarification. Your goal is to provide a complete, enhanced prompt based on the information you have.
-    - **DO NOT** include any conversational preambles (e.g., "Here is the enhanced prompt:").
-    - **DO NOT** provide any explanations about the changes made.
-    - **DO NOT** use any markdown formatting (like \`\`\`) or enclose the output in quotes.
-
-    Your response MUST be the rewritten prompt, suitable for direct use.`;
-
-    switch (strategyDecision.chosen_strategy) {
-        case 'Chain_of_Thought':
-            // --- MODIFIED: Hardened prompt to ensure the final output is clean and not a question ---
-            executionPrompt = `Your task is to rewrite the 'Original User Prompt' to meet the 'Goal' by thinking step-by-step.
-First, write down your reasoning.
-Then, on a new line, provide the final, rewritten prompt prefixed with the exact phrase "Final Prompt:".
-
-**CRITICAL RULE FOR THE FINAL PROMPT:** The text after "Final Prompt:" must be the complete, rewritten prompt, ready for immediate use. It MUST NOT ask any questions to the user.
-
-**Goal:** ${strategyDecision.enhancement_goal}
-**Original User Prompt:** --- ${prompt}`;
-            break;
-        case 'Contextual':
-            const knowledgeGenPrompt = `Based on the user's prompt ("${prompt}"), generate 3-5 essential facts or key points that would provide necessary context for a large language model.`;
-            const knowledge = await makeApiCall(apiKey, knowledgeGenPrompt);
-            executionPrompt = `${baseInstruction}\n\nUse the following key points as context:\n${knowledge}\n\n**Goal:** ${strategyDecision.enhancement_goal}\n**Original User Prompt:** --- ${prompt}`;
-            break;
-        default:
-            // For Directive, Exploratory, Reflective, Sequential, and Zero_Shot_Correction,
-            // the goal from the strategist is descriptive enough to guide the execution.
-            executionPrompt = `${baseInstruction}\n\n**Goal:** ${strategyDecision.enhancement_goal}\n**Original User Prompt:** --- ${prompt}`;
-            break;
+    if (strategy.chosen_strategy === 'Chain_of_Thought') {
+        executionPrompt = `${baseInstruction}\nThink step-by-step, then output the rewritten prompt after the exact phrase "Final Prompt:".\nGoal: ${strategy.enhancement_goal}\nOriginal User Prompt: --- ${prompt}`;
+    } else if (strategy.chosen_strategy === 'Contextual') {
+        const knowledge = await makeApiCall(apiKey, provider,
+            `Generate 3-5 essential facts that provide context for this prompt: "${prompt}"`);
+        executionPrompt = `${baseInstruction}\nContext: ${knowledge}\nGoal: ${strategy.enhancement_goal}\nOriginal User Prompt: --- ${prompt}`;
+    } else {
+        executionPrompt = `${baseInstruction}\nGoal: ${strategy.enhancement_goal}\nOriginal User Prompt: --- ${prompt}`;
     }
 
-    let enhancedText = await makeApiCall(apiKey, executionPrompt);
-    
-    // --- Post-Processing and Cleaning ---
-    if (strategyDecision.chosen_strategy === 'Chain_of_Thought') {
-        const finalPromptIndex = enhancedText.lastIndexOf('Final Prompt:');
-        if (finalPromptIndex !== -1) {
-            enhancedText = enhancedText.substring(finalPromptIndex + 'Final Prompt:'.length);
-        }
+    let enhanced = await makeApiCall(apiKey, provider, executionPrompt);
+
+    // Clean up Executor formatting artifacts
+    if (strategy.chosen_strategy === 'Chain_of_Thought') {
+        const idx = enhanced.lastIndexOf('Final Prompt:');
+        if (idx !== -1) enhanced = enhanced.substring(idx + 'Final Prompt:'.length);
     }
-    
-    enhancedText = enhancedText
+
+    enhanced = enhanced
         .replace(/^Here is the enhanced prompt:\s*/i, '')
-        .replace(/^Sure, here's the revised prompt:\s*/i, '')
-        .replace(/^Certainly, here is the enhanced prompt:\s*/i, '')
-        .replace(/```(json|javascript|text)?/g, '')
+        .replace(/^Sure, here'?s the revised prompt:\s*/i, '')
+        .replace(/^Certainly.*?:\s*/i, '')
+        .replace(/```[\w]*/g, '')
+        .replace(/```/g, '')
         .replace(/^["']|["']$/g, '')
         .trim();
 
-
-    if (!enhancedText) {
-        throw new Error("The execution model returned an empty prompt after cleaning.");
-    }
-
-    return { status: 'success', text: enhancedText };
+    if (!enhanced) throw new Error('Model executor returned an empty response.');
+    return { status: 'success', text: enhanced };
 }

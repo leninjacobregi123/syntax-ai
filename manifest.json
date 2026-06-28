@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SYNTAX AI",
-  "version": "3.0",
+  "version": "4.0",
   "description": "Uses a Large Language Model to intelligently enhance your prompts across various AI platforms.",
   "permissions": [
     "storage",
@@ -22,9 +22,20 @@
         "*://chatgpt.com/*",
         "*://gemini.google.com/*",
         "*://claude.ai/*",
-        "*://www.plexity.ai/*"
+        "*://www.perplexity.ai/*"
       ],
       "js": ["content.js"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/icon16.png", "icons/icon48.png", "icons/icon128.png"],
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://gemini.google.com/*",
+        "*://claude.ai/*",
+        "*://www.perplexity.ai/*"
+      ]
     }
   ],
   "options_page": "options.html",
