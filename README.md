@@ -22,34 +22,8 @@ Syntax AI is designed around a decoupled, local-first event-driven architecture.
 
 Instead of applying a static template, Syntax AI leverages a two-phase LLM dispatcher loop to understand intent and rewrite the prompt contextually.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as User Input Area
-    participant CS as Content Script
-    participant BG as Background Worker
-    participant Storage as Sync Storage
-    participant LLM as Target LLM API
+<img width="1617" height="1660" alt="Blank diagram (3)" src="https://github.com/user-attachments/assets/5d57e3c6-0cc7-4b6a-87e3-e68261830c73" />
 
-    User->>CS: Click Enhance Button
-    CS->>Storage: Get apiKey & provider
-    Storage-->>CS: Return key configuration
-    alt No API Key Found
-        CS-->>User: Open Inline Setup Popup
-    else API Key Exists
-        CS->>BG: send({action: "enhancePrompt", prompt})
-        BG->>Storage: Fetch key & configurations
-        Storage-->>BG: Return credentials
-        Note over BG, LLM: Step 1: Strategist Phase
-        BG->>LLM: Analyze prompt & determine strategy
-        LLM-->>BG: Return strategy (JSON)
-        Note over BG, LLM: Step 2: Execution Phase
-        BG->>LLM: Rewrite prompt using strategy & context
-        LLM-->>BG: Return enhanced prompt text
-        BG-->>CS: Send enhancement response
-        CS->>User: Replace input text & dispatch event
-    end
-```
 
 ### The Two-Stage Pipeline
 1. **The Strategist Phase**: Analyzes your raw draft and determines which cognitive prompt engineering strategy will yield the best results (e.g., *Chain-of-Thought*, *Contextual Expansion*, *Directive*, etc.).
