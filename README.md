@@ -1,3 +1,9 @@
+
+https://github.com/user-attachments/assets/eda5e926-fc36-489a-8cc7-3c5cdeeba9e9
+
+
+Uploading Video 2026-06-30 at 10.02.03 AM.mp4…
+
 # Syntax AI 🚀
 
 An enterprise-grade, privacy-first Chrome Extension that enhances LLM prompt quality in real-time. Sitting directly inside platforms like **ChatGPT**, **Claude**, **Google Gemini**, and **Perplexity**, Syntax AI intercepts your drafts, runs a two-stage agentic enhancement cycle, and injects highly optimized, context-aware prompts back into the DOM.
