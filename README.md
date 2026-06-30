@@ -8,28 +8,8 @@ An enterprise-grade, privacy-first Chrome Extension that enhances LLM prompt qua
 
 Syntax AI is designed around a decoupled, local-first event-driven architecture. By keeping credential management and API dispatching in the background service worker, it prevents DOM-based injection vulnerabilities and maintains compliance with modern browser sandboxing standards.
 
-```mermaid
-graph TD
-    User([User Prompt Input]) -->|Trigger Enhance| CS[Content Script]
-    CS -->|Query Keys| Storage[(Chrome Sync Storage)]
-    Storage -->|API Key Status| CS
-    
-    subgraph Extension Sandbox
-        CS -->|chrome.runtime.sendMessage| BG[Background Service Worker]
-        BG -->|Fetch Key/Provider| Storage
-    end
-    
-    subgraph Multi-Provider Dispatcher
-        BG -->|Direct API Call| Gemini[Google Gemini API]
-        BG -->|Direct API Call| OpenAI[OpenAI API]
-        BG -->|Direct API Call| OpenRouter[OpenRouter / Claude API]
-        BG -->|Direct API Call| Other[Other Compat APIs]
-    end
-    
-    Gemini & OpenAI & OpenRouter & Other -->|LLM Prompt Response| BG
-    BG -->|chrome.runtime.sendMessage Response| CS
-    CS -->|Update DOM| InputArea[AI Platform TextArea]
-```
+<img width="2041" height="1883" alt="Blank diagram (2)" src="https://github.com/user-attachments/assets/458612b9-8ba1-4760-a271-2841c1b582a8" />
+
 
 ### Key Components
 1. **Content Script (`content.js`)**: Coordinates DOM injection, monitors site styling to apply adaptive dark/light themes, captures user input from active textboxes, and provides an inline configuration panel when credentials are missing.
